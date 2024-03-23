@@ -1,4 +1,11 @@
-import logging, os, platform, subprocess
+import logging
+import os
+import platform
+import subprocess
+
+from tempfile import TemporaryDirectory
+from traceback import format_exc
+from uuid import uuid4
 
 from constants import (
     APPLY_PATCH_FAIL,
@@ -17,8 +24,6 @@ from constants import (
     TESTS_TIMEOUT,
     TESTS_ERROR,
 )
-from tempfile import TemporaryDirectory
-from traceback import format_exc
 from utils import (
     clone_repo,
     get_conda_env_names,
@@ -42,8 +47,10 @@ class ExecWrapper:
             self.subprocess_args = {}
         else:
             self.subprocess_args = subprocess_args
+        self.id = uuid4()
 
     def __call__(self, cmd, raise_error=True, **kwargs):
+        print(self.id, cmd)
         try:
             combined_args = {**self.subprocess_args, **kwargs}
             output = subprocess.run(cmd, **combined_args)
@@ -223,7 +230,6 @@ class TestbedContextManager:
         shellenv["PATH"] = conda_bin_path + os.pathsep + shellenv["PATH"]
         self.exec.subprocess_args["env"] = shellenv
 
-        path_activate = os.path.join(self.path_conda, "bin", "activate")
         exec_type = "mamba" if "mamba" in self.path_conda else "conda"
         exec_cmd = os.path.join(self.path_conda, "bin", exec_type)
         env_list = get_conda_env_names(exec_cmd, shellenv)
@@ -242,100 +248,142 @@ class TestbedContextManager:
 
             # Create conda environment per version of the repo
             for version, install in MAP_VERSION_TO_INSTALL[repo].items():
-                # Skip if none of the task instances are for this version
-                if version not in version_to_setup_ref:
-                    continue
-
-                # Name for both environment and github repo
-                env_name = f"{repo_prefix}__{version}"
-                logger_testbed.info(f"[Testbed] Setting up testbed for {env_name}")
-
-                # Clone github per repo/version
-                repo_path = os.path.join(self.testbed, env_name)
-                if not os.path.exists(repo_path):
-                    clone_repo(repo, repo_path)
-                    logger_testbed.info(f"[Testbed] Cloned {repo} to {repo_path}")
-                else:
-                    logger_testbed.info(
-                        f"[Testbed] Repo for {repo_prefix} version {version} exists: {repo_path}; skipping"
-                    )
-
-                # Skip if conda environment already exists
-                if env_name in env_list:
-                    logger_testbed.info(
-                        f"[Testbed] Environment {env_name} already exists; skipping"
-                    )
-                    continue
-
-                # Get setup reference instance
-                setup_ref_instance = version_to_setup_ref[version]
-
-                # Create conda environment according to install instructinos
-                pkgs = install["packages"] if "packages" in install else ""
-                if pkgs == "requirements.txt":
-                    # Create environment
-                    cmd = (
-                        f"{exec_cmd} create -n {env_name} python={install['python']} -y"
-                    )
-                    logger_testbed.info(
-                        f"[Testbed] Creating environment {env_name}; Command: {cmd}"
-                    )
-                    self.exec(cmd.split(" "))
-
-                    # Install dependencies
-                    path_to_reqs = get_requirements(setup_ref_instance, self.testbed)
-                    cmd = f"source {path_activate} {env_name} && echo 'activate successful' && pip install -r {path_to_reqs}"
-                    logger_testbed.info(
-                        f"[Testbed] Installing dependencies for {env_name}; Command: {cmd}"
-                    )
-                    self.exec(cmd, shell=True)
-                    os.remove(path_to_reqs)
-                elif pkgs == "environment.yml":
-                    # Create environment from yml
-                    path_to_reqs = get_environment_yml(
-                        setup_ref_instance, env_name, self.testbed
-                    )
-                    if "no_use_env" in install and install["no_use_env"]:
-                        # `conda create` based installation
-                        cmd = f"{exec_cmd} create -c conda-forge -n {env_name} python={install['python']} -y"
-                        logger_testbed.info(
-                            f"[Testbed] Creating environment {env_name}; Command: {cmd}"
-                        )
-                        self.exec(cmd.split(" "))
-
-                        # Install dependencies
-                        cmd = f"{exec_cmd} env update -f {path_to_reqs}"
-                        logger_testbed.info(
-                            f"[Testbed] Installing dependencies for {env_name}; Command: {cmd}"
-                        )
-                        self.exec(cmd.split(" "))
-                    else:
-                        # `conda env create` based installation
-                        cmd = f"{exec_cmd} env create --file {path_to_reqs}"
-                        logger_testbed.info(
-                            f"[Testbed] Creating environment {env_name}; Command: {cmd}"
-                        )
-                        self.exec(cmd.split(" "))
-
-                    # Remove environment.yml
-                    os.remove(path_to_reqs)
-                else:
-                    # Create environment + install dependencies
-                    cmd = f"{exec_cmd} create -n {env_name} python={install['python']} {pkgs} -y"
-                    logger_testbed.info(
-                        f"[Testbed] Creating environment {env_name}; Command: {cmd}"
-                    )
-                    self.exec(cmd.split(" "))
-
-                # Install additional packages if specified
-                if "pip_packages" in install:
-                    cmd = f"source {path_activate} {env_name} && pip install {install['pip_packages']}"
-                    logger_testbed.info(
-                        f"[Testbed] Installing pip packages for {env_name}; Command: {cmd}"
-                    )
-                    self.exec(cmd, shell=True)
+                self.install_version(version_to_setup_ref, version, repo_prefix, install, repo, env_list)
 
         return self
+
+    def get_conda_cmd(self):
+        exec_type = "mamba" if "mamba" in self.path_conda else "conda"
+        return os.path.join(self.path_conda, "bin", exec_type)
+
+    def install_version(self, version_to_setup_ref, version, repo_prefix, install, repo, env_list):
+        # Skip if none of the task instances are for this version
+        if version not in version_to_setup_ref:
+            return
+        version_path = version.replace('.', '_')
+        conda_path = self.get_conda_cmd()
+
+        # Name for both environment and github repo
+        env_name = f"{repo_prefix}__{version_path}"
+        path_pip = os.path.join(self.path_conda, "envs", env_name, "bin", "pip3")
+        path_python = os.path.join(self.path_conda, "envs", env_name, "bin", "python3")
+
+        logger_testbed.info(f"[Testbed] Setting up testbed for {env_name}")
+        # Clone github per repo/version
+        repo_path = os.path.join(self.testbed, env_name)
+
+        if not os.path.exists(repo_path):
+            clone_repo(repo, repo_path)
+            logger_testbed.info(f"[Testbed] Cloned {repo} to {repo_path}")
+        else:
+            logger_testbed.info(
+                f"[Testbed] Repo for {repo_prefix} version {version_path} exists: {repo_path}; skipping"
+            )
+
+        # Skip if conda environment already exists
+        if env_name in env_list:
+            logger_testbed.info(
+                f"[Testbed] Environment {env_name} already exists; skipping"
+            )
+            return
+
+        # Get setup reference instance
+        setup_ref_instance = version_to_setup_ref[version]
+
+        # Create conda environment according to install instructinos
+        pkgs = install["packages"] if "packages" in install else ""
+        if pkgs == "requirements.txt":
+            self.install_requirements(
+                setup_ref_instance,
+                install,
+                env_name,
+                path_pip,
+                path_python,
+                repo_path,
+            )
+        elif pkgs == "environment.yml":
+            self.install_environment(
+                setup_ref_instance,
+                install,
+                env_name,
+            )
+        else:
+            # Create environment + install dependencies
+            cmd = f"{conda_path} create -n {env_name} python={install['python']} {pkgs} -y"
+            logger_testbed.info(
+                f"[Testbed] Creating environment {env_name}; Command: {cmd}"
+            )
+            self.exec(cmd.split(" "))
+
+        # Install additional packages if specified
+        if "pip_packages" in install:
+            cmd = f"{path_pip} install {install['pip_packages']}"
+            logger_testbed.info(
+                f"[Testbed] Installing pip packages for {env_name}; Command: {cmd}"
+            )
+            self.exec(cmd, shell=True)
+
+    def install_requirements(self, setup_ref_instance, install, env_name, path_pip, path_python, repo_path):
+        exec_type = "mamba" if "mamba" in self.path_conda else "conda"
+        conda_cmd = os.path.join(self.path_conda, "bin", exec_type)
+        python_version = install['python']
+
+        # Create environment
+        cmd = (
+            f"{conda_cmd} create -n {env_name} python={python_version} -y"
+        )
+        logger_testbed.info(
+            f"[Testbed] Creating environment {env_name}; Command: {cmd}"
+        )
+        self.exec(cmd.split(" "))
+
+        # Install dependencies
+        reqs = get_requirements(setup_ref_instance, self.testbed)
+        if reqs is None:
+            raise RuntimeError("Could not get requirements for instance {setup_ref_instance}")
+
+        for path_to_req in reqs:
+            with open(os.path.join(repo_path, path_to_req), 'r') as f:
+                print(f.read())
+            os.system(f"{path_python} --version")
+
+            cmd = f"{path_pip} install -r {path_to_req}"
+            logger_testbed.info(
+                f"[Testbed] Installing dependencies for {env_name}; Command: {cmd}"
+            )
+            self.exec(cmd, shell=True, cwd=repo_path)
+
+    def install_environment(self, setup_ref_instance, install, env_name):
+        exec_type = "mamba" if "mamba" in self.path_conda else "conda"
+        conda_cmd = os.path.join(self.path_conda, "bin", exec_type)
+        # Create environment from yml
+        path_to_reqs = get_environment_yml(
+            setup_ref_instance, env_name, self.testbed
+        )
+        if "no_use_env" in install and install["no_use_env"]:
+            # `conda create` based installation
+            cmd = f"{conda_cmd} create -c conda-forge -n {env_name} python={install['python']} -y"
+            logger_testbed.info(
+                f"[Testbed] Creating environment {env_name}; Command: {cmd}"
+            )
+            self.exec(cmd.split(" "))
+
+            # Install dependencies
+            cmd = f"{conda_cmd} env update -f {path_to_reqs}"
+            logger_testbed.info(
+                f"[Testbed] Installing dependencies for {env_name}; Command: {cmd}"
+            )
+            self.exec(cmd.split(" "))
+        else:
+            # `conda env create` based installation
+            cmd = f"{conda_cmd} env create --file {path_to_reqs}"
+            logger_testbed.info(
+                f"[Testbed] Creating environment {env_name}; Command: {cmd}"
+            )
+            self.exec(cmd.split(" "))
+
+        # Remove environment.yml
+        os.remove(path_to_reqs)
 
     def get_distributed_tasks(self) -> list:
         """
@@ -349,7 +397,8 @@ class TestbedContextManager:
         for repo, map_version_to_instances in self.task_instances_grouped.items():
             repo_prefix = repo.replace("/", "__")
             for version, instances in map_version_to_instances.items():
-                env_name = f"{repo_prefix}__{version}"
+                version_path = version.replace('.', '_')
+                env_name = f"{repo_prefix}__{version_path}"
                 task_set = {
                     "conda_path": self.path_conda,
                     "log_dir": self.log_dir,
@@ -528,7 +577,10 @@ class TaskEnvContextManager:
                     f"[{self.testbed_name}] [{instance[KEY_INSTANCE_ID]}] Running pre-install setup command: {cmd_pre_install}"
                 )
                 out_pre_install = self.exec(
-                    cmd_pre_install, timeout=self.timeout, shell=True
+                    cmd_pre_install,
+                    timeout=self.timeout,
+                    shell=True,
+                    executable='/bin/bash'
                 )
                 with open(self.log_file, "a") as f:
                     f.write(f"Pre-installation Command: {cmd_pre_install}\n")
@@ -552,7 +604,10 @@ class TaskEnvContextManager:
         )
         try:
             # Run installation command
-            out_install = self.exec(cmd_install, timeout=self.timeout, shell=True)
+            out_install = self.exec(cmd_install,
+                                    timeout=self.timeout,
+                                    shell=True,
+                                    executable='/bin/bash')
 
             # Write installation logs to log file
             with open(self.log_file, "a") as f:
@@ -664,7 +719,11 @@ class TaskEnvContextManager:
             with open(self.log_file, "a") as f:
                 f.write(f"Test Script: {test_cmd};\n")
             out_test = self.exec(
-                test_cmd, shell=True, timeout=self.timeout, check=False
+                test_cmd,
+                shell=True,
+                executable='/bin/bash',
+                timeout=self.timeout,
+                check=False
             )
 
             # Write test results to log file

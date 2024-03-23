@@ -81,7 +81,7 @@ MAP_VERSION_TO_INSTALL_FLASK.update(
 
 MAP_VERSION_TO_INSTALL_DJANGO = {
     k: {
-        "python": "3.5",
+        "python": "3.7",
         "packages": "requirements.txt",
         "install": "python setup.py install",
     }
@@ -96,7 +96,7 @@ MAP_VERSION_TO_INSTALL_DJANGO.update(
 MAP_VERSION_TO_INSTALL_DJANGO.update(
     {
         k: {
-            "python": "3.6",
+            "python": "3.7",
             "packages": "requirements.txt",
             "install": "python -m pip install -e .",
         }

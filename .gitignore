@@ -172,3 +172,6 @@ analysis/**/scratch*
 analysis/benchmark/plots/
 analysis/evaluation/*.csv
 analysis/evaluation/*.pdf
+
+requirements.txt
+data/

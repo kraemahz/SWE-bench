@@ -138,62 +138,25 @@ def get_requirements(instance: dict, save_path: str = None):
             Otherwise, returns requirements.txt as string
     """
     # Attempt to find requirements.txt at each path based on task instance's repo
-    path_worked = False
+    all_exist = True
     commit = 'environment_setup_commit' if 'environment_setup_commit' in instance else 'base_commit'
 
-    for req_path in MAP_REPO_TO_REQS_PATHS[instance["repo"]]:
+    req_paths = MAP_REPO_TO_REQS_PATHS[instance["repo"]]
+    for req_path in req_paths:
         reqs_url = os.path.join(
             SWE_BENCH_URL_RAW, instance["repo"], instance[commit], req_path
         )
         reqs = requests.get(reqs_url)
-        if reqs.status_code == 200:
-            path_worked = True
+        if reqs.status_code != 200:
+            all_exist = False
             break
-    if not path_worked:
+    if not all_exist:
         print(
             f"Could not find requirements.txt at paths {MAP_REPO_TO_REQS_PATHS[instance['repo']]}"
         )
         return None
 
-    lines = reqs.text
-    original_req = []
-    additional_reqs = []
-    req_dir = "/".join(req_path.split("/")[:-1])
-    exclude_line = lambda line: any(
-        [line.strip().startswith(x) for x in ["-e .", "#", ".[test"]]
-    )
-
-    for line in lines.split("\n"):
-        if line.strip().startswith("-r"):
-            # Handle recursive requirements
-            file_name = line[len("-r") :].strip()
-            reqs_url = os.path.join(
-                SWE_BENCH_URL_RAW,
-                instance["repo"],
-                instance[commit],
-                req_dir,
-                file_name,
-            )
-            reqs = requests.get(reqs_url)
-            if reqs.status_code == 200:
-                for line_extra in reqs.text.split("\n"):
-                    if not exclude_line(line_extra):
-                        additional_reqs.append(line_extra)
-        else:
-            if not exclude_line(line):
-                original_req.append(line)
-
-    # Combine all requirements into single text body
-    additional_reqs.append("\n".join(original_req))
-    all_reqs = "\n".join(additional_reqs)
-
-    if save_path is None:
-        return all_reqs
-
-    path_to_reqs = os.path.join(save_path, "requirements.txt")
-    with open(path_to_reqs, "w") as f:
-        f.write(all_reqs)
-    return path_to_reqs
+    return req_paths
 
 
 def get_test_directives(instance: dict) -> list:
@@ -222,7 +185,7 @@ def get_test_directives(instance: dict) -> list:
         directives_transformed = []
         for d in directives:
             d = d[: -len(".py")] if d.endswith(".py") else d
-            d = d[len("tests/") :] if d.startswith("tests/") else d
+            d = d[len("tests/"):] if d.startswith("tests/") else d
             d = d.replace("/", ".")
             directives_transformed.append(d)
         directives = directives_transformed
@@ -272,7 +235,7 @@ def split_instances(input_list: list, n: int) -> list:
 
     for i in range(n):
         length = avg_length + 1 if i < remainder else avg_length
-        sublist = input_list[start : start + length]
+        sublist = input_list[start:start + length]
         result.append(sublist)
         start += length
 
@@ -290,7 +253,7 @@ def find_python_by_date(target_date, date_format="%Y%m%d"):
         python_version (str): Python version closest to target_date
     """
     # Make web request to versions + date page
-    url = f"https://www.python.org/doc/versions/"
+    url = "https://www.python.org/doc/versions/"
     response = requests.get(url)
 
     # Look for all matches
@@ -430,7 +393,7 @@ def has_attribute_or_import_error(log_before):
                 if target_word in line:
                     hits.append(line)
             return hits
-        
+
         # Get line with Attribute/Import error
         lines_1 = get_lines_with_word(log_before, 'attribute')
         lines_2 = get_lines_with_word(log_before, 'import')
